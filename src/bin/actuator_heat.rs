@@ -1,7 +1,15 @@
 use glass::{Info, Mirror};
 use gmt_kpp::KPP;
 use plotters::prelude::*;
+use structopt::StructOpt;
 
+#[derive(Debug, StructOpt)]
+#[structopt(name = "actuator_heat", about = "CFD M1 segment surface deformation")]
+struct Opt {
+    /// Case folder name
+    #[structopt(short, long)]
+    case: String,
+}
 #[derive(Debug)]
 enum PSSN {
     V(f64),
@@ -9,7 +17,9 @@ enum PSSN {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let mirror = Mirror::new()?;
+    let opt = Opt::from_args();
+    let case = opt.case;
+    let mirror = Mirror::new(&case)?;
     mirror.to_pkl()?;
     mirror.stats();
     mirror.show(Info::Temperature)?;
@@ -17,7 +27,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     mirror.show(Info::ResidualSurface)?;
     let mut mirror = mirror.resample_on_bending_modes()?.filtered()?;
     mirror.stats().show(Info::Surface)?;
-    mirror.to_local().show_whole();
+    mirror.to_local().show_whole()?;
     println!("Gridding ...");
     let length = 25.5f64;
     let n_grid = 769;
@@ -32,9 +42,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             pssn.estimate(&pupil, Some(&wavefront))
         }),
     ];
-    println!("PSSN:{:.4?}",pssn);
+    println!("PSSN:{:.4?}", pssn);
 
-    let plot = BitMapBackend::new("wavefront.png", (n_grid as u32 + 100, n_grid as u32 + 100))
+    let filename = glass::data_path()?.join(&case).join("wavefront.png");
+    let plot = BitMapBackend::new(&filename, (n_grid as u32 + 100, n_grid as u32 + 100))
         .into_drawing_area();
     plot.fill(&BLACK).unwrap();
     let l = length / 2.;

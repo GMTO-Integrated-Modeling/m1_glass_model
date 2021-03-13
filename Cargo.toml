@@ -18,3 +18,4 @@ spade = "1.8.2"
 geotrans = { git = "https://github.com/rconan/geotrans.git", branch = "main" }
 gmt-kpp = { git = "https://github.com/rconan/gmt-kpp.git", branch = "main" }
 rayon = "1.5.0"
+structopt = "0.3.21"

@@ -12,7 +12,7 @@ use spade::delaunay::{
 };
 use spade::kernels::FloatKernel;
 use spade::HasPosition;
-use std::fs::File;
+use std::{env, fs::File, path::PathBuf};
 
 const N_BM: usize = 27;
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
@@ -97,6 +97,10 @@ fn truss_shadow(x: f64, y: f64) -> bool {
         true
     }
 }
+pub fn data_path() -> Result<PathBuf> {
+    let path = env::current_dir()?.join("data");
+    Ok(path)
+}
 
 #[derive(Debug, Deserialize)]
 struct Data {
@@ -124,10 +128,14 @@ pub struct Segment {
     pub y: Vec<f64>,
     pub z: Vec<f64>,
     pub temperature: Vec<f64>,
+    pub model_dir: String,
 }
 impl Segment {
-    pub fn new(datapath: &str, tag: &str) -> Result<Self> {
-        println!("Reading {}...", datapath);
+    pub fn new(model_dir: &str, tag: &str) -> Result<Self> {
+        let datapath = data_path()?
+            .join(model_dir)
+            .join(format!("{}_disp_heat-act.csv", tag));
+        println!("Reading {:?}...", datapath);
         let mut rdr = csv::Reader::from_path(datapath)?;
         let mut data: Vec<Data> = vec![];
         for d in rdr.deserialize() {
@@ -164,6 +172,7 @@ impl Segment {
             y,
             z,
             temperature,
+            model_dir: model_dir.to_owned(),
         })
     }
     pub fn to_pkl<P>(&self, path: P) -> Result<()>
@@ -186,7 +195,7 @@ impl Segment {
             nodes,
             field: self.temperature.clone(),
         };
-        let mut file = File::create(path)?;
+        let mut file = File::create(data_path()?.join(&self.model_dir).join(path))?;
         pkl::to_writer(&mut file, &field, true).map_err(|e| e.into())
     }
     pub fn filter_surface(
@@ -260,9 +269,10 @@ pub enum Info {
 }
 impl Segment {
     pub fn show(&self, info: Info) -> Result<&Self> {
+        let datapath = data_path()?.join(&self.model_dir);
         match info {
             Info::Surface => {
-                let filename = format!("actuator_heat_{}_surface.png", self.tag);
+                let filename = datapath.join(format!("actuator_heat_{}_surface.png", self.tag));
                 let l = 4.2f64;
                 let figure = BitMapBackend::new(&filename, (1024, 1024)).into_drawing_area();
                 let mut axis = ChartBuilder::on(&figure)
@@ -275,7 +285,8 @@ impl Segment {
                 plt::trimap(&self.x, &self.y, &self.z, &mut axis);
             }
             Info::ResidualSurface => {
-                let filename = format!("actuator_heat_{}_residual-surface.png", self.tag);
+                let filename =
+                    datapath.join(format!("actuator_heat_{}_residual-surface.png", self.tag));
                 let ze = self.filter_surface(&self.z, None)?;
                 let l = 4.2f64;
                 let figure = BitMapBackend::new(&filename, (1024, 1024)).into_drawing_area();
@@ -289,7 +300,7 @@ impl Segment {
                 plt::trimap(&self.x, &self.y, &ze, &mut axis);
             }
             Info::Temperature => {
-                let filename = format!("actuator_heat_{}_temperature.png", self.tag);
+                let filename = datapath.join(format!("actuator_heat_{}_temperature.png", self.tag));
                 let l = 4.2f64;
                 let figure = BitMapBackend::new(&filename, (1024, 1024)).into_drawing_area();
                 let mut axis = ChartBuilder::on(&figure)
@@ -389,7 +400,7 @@ impl Segments<Segment> {
                         x,
                         y,
                         z,
-                        temperature: segment.temperature.clone(),
+                        ..segment.clone()
                     }))
                 })
             }
@@ -404,7 +415,7 @@ impl Segments<Segment> {
                         x,
                         y,
                         z,
-                        temperature: segment.temperature.clone(),
+                        ..segment.clone()
                     }))
                 })
             }
@@ -449,13 +460,15 @@ pub struct Mirror {
     center: Segments<Segment>,
     outer: Segments<Segment>,
     segments: Option<Vec<Segment>>,
+    case: String,
 }
 impl Mirror {
-    pub fn new() -> Result<Self> {
+    pub fn new(case: &str) -> Result<Self> {
         Ok(Self {
-            outer: Segments::Outer(Segment::new("../Disp_offaxis_Heatact.csv", "outer")?),
-            center: Segments::Center(Segment::new("../Disp_Front_onaxis_heatact.csv", "center")?),
+            outer: Segments::Outer(Segment::new(case, "outer")?),
+            center: Segments::Center(Segment::new(case, "center")?),
             segments: None,
+            case: case.to_owned(),
         })
     }
     pub fn to_pkl(&self) -> Result<&Self> {
@@ -468,9 +481,9 @@ impl Mirror {
         self.outer.show(info)?;
         Ok(self)
     }
-    pub fn show_whole(&self) {
+    pub fn show_whole(&self) -> Result<()> {
         let l = 13f64;
-        let filename = "actuator_heat_whole.png";
+        let filename = data_path()?.join(&self.case).join("actuator_heat_whole.png");
         let figure = BitMapBackend::new(&filename, (1024, 1024)).into_drawing_area();
         let mut axis = ChartBuilder::on(&figure)
             .build_cartesian_2d(-l..l, -l..l)
@@ -480,12 +493,14 @@ impl Mirror {
             .unwrap()
             .iter()
             .for_each(|s| plt::trimap(&s.x, &s.y, &s.z, &mut axis));
+        Ok(())
     }
     pub fn resample_on_bending_modes(self) -> Result<Mirror> {
         Ok(Mirror {
             center: self.center.resample_on_bending_modes()?,
             outer: self.outer.resample_on_bending_modes()?,
             segments: None,
+            case: self.case,
         })
     }
     pub fn filtered(self) -> Result<Mirror> {
@@ -493,6 +508,7 @@ impl Mirror {
             center: self.center.filter_surface()?,
             outer: self.outer.filter_surface()?,
             segments: None,
+            case: self.case,
         })
     }
     pub fn stats(&self) -> &Self {
