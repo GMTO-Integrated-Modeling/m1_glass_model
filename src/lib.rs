@@ -107,7 +107,7 @@ struct Data {
     #[serde(rename = "Displacement: Magnitude (m)")]
     pub delta_z: f64,
     #[serde(rename = "Temperature (K)")]
-    pub temperature: f64,
+    pub temperature: Option<f64>,
     #[serde(rename = "X (m)")]
     pub x: f64,
     #[serde(rename = "Y (m)")]
@@ -127,7 +127,7 @@ pub struct Segment {
     pub x: Vec<f64>,
     pub y: Vec<f64>,
     pub z: Vec<f64>,
-    pub temperature: Vec<f64>,
+    pub temperature: Option<Vec<f64>>,
     pub model_dir: String,
 }
 impl Segment {
@@ -158,45 +158,58 @@ impl Segment {
         let temperature: Vec<_> = data
             .iter()
             .filter(|d| d.x.hypot(d.y) <= 0.5 * 8.365)
-            .map(|d| d.temperature)
+            .filter_map(|d| d.temperature)
             .collect();
 
-        //println!("Surface [nm]:");
-        //minmax(&z);
-        println!("Temperature [K]:");
-        minmax(&temperature);
-
-        Ok(Self {
-            tag: tag.to_owned(),
-            x,
-            y,
-            z,
-            temperature,
-            model_dir: model_dir.to_owned(),
+        Ok(if temperature.is_empty() {
+            Self {
+                tag: tag.to_owned(),
+                x,
+                y,
+                z,
+                temperature: None,
+                model_dir: model_dir.to_owned(),
+            }
+        } else {
+            //println!("Surface [nm]:");
+            //minmax(&z);
+            println!("Temperature [K]:");
+            minmax(&temperature);
+            Self {
+                tag: tag.to_owned(),
+                x,
+                y,
+                z,
+                temperature: Some(temperature),
+                model_dir: model_dir.to_owned(),
+            }
         })
     }
     pub fn to_pkl<P>(&self, path: P) -> Result<()>
     where
         P: AsRef<std::path::Path> + std::fmt::Display + Copy,
     {
-        use serde::Serialize;
-        #[derive(Serialize)]
-        struct Field {
-            nodes: Vec<f64>, //x0,y0,x1,y1,...
-            field: Vec<f64>,
-        };
-        let nodes: Vec<_> = self
-            .x
-            .iter()
-            .zip(self.y.iter())
-            .flat_map(|(x, y)| vec![*x, *y])
-            .collect();
-        let field = Field {
-            nodes,
-            field: self.temperature.clone(),
-        };
-        let mut file = File::create(data_path()?.join(&self.model_dir).join(path))?;
-        pkl::to_writer(&mut file, &field, true).map_err(|e| e.into())
+        if let Some(temperature) = &self.temperature {
+            use serde::Serialize;
+            #[derive(Serialize)]
+            struct Field {
+                nodes: Vec<f64>, //x0,y0,x1,y1,...
+                field: Vec<f64>,
+            };
+            let nodes: Vec<_> = self
+                .x
+                .iter()
+                .zip(self.y.iter())
+                .flat_map(|(x, y)| vec![*x, *y])
+                .collect();
+            let field = Field {
+                nodes,
+                field: temperature.clone(),
+            };
+            let mut file = File::create(data_path()?.join(&self.model_dir).join(path))?;
+            pkl::to_writer(&mut file, &field, true)?
+        }
+        Ok(())
     }
     pub fn filter_surface(
         &self,
@@ -300,54 +313,54 @@ impl Segment {
                 plt::trimap(&self.x, &self.y, &ze, &mut axis);
             }
             Info::Temperature => {
-                let filename = datapath.join(format!("actuator_heat_{}_temperature.png", self.tag));
-                let l = 4.2f64;
-                let figure = BitMapBackend::new(&filename, (1024, 1024)).into_drawing_area();
-                let mut axis = ChartBuilder::on(&figure)
-                    .set_label_area_size(LabelAreaPosition::Left, 50)
-                    .set_label_area_size(LabelAreaPosition::Bottom, 50)
-                    .margin_top(50)
-                    .margin_right(50)
-                    .build_cartesian_2d(-l..l, -l..l)
-                    .unwrap();
-                plt::trimap(&self.x, &self.y, &self.temperature, &mut axis);
-                let legend_plot = figure.clone();
-                //.shrink((n_grid as u32 - 50, 40), (50, n_grid as u32 - 80));
-                let n_grid = 800;
-                let cells_max = self
-                    .temperature
-                    .iter()
-                    .cloned()
-                    .fold(f64::NEG_INFINITY, f64::max);
-                let cells_min = self
-                    .temperature
-                    .iter()
-                    .cloned()
-                    .fold(f64::INFINITY, f64::min);
-                let mut legend = ChartBuilder::on(&legend_plot)
-                    .set_label_area_size(LabelAreaPosition::Right, 50)
-                    .margin_top(50)
-                    .margin_bottom(50)
-                    .build_cartesian_2d(0..n_grid, cells_min..cells_max)
-                    .unwrap();
-                legend
-                    .configure_mesh()
-                    .disable_x_mesh()
-                    .disable_y_mesh()
-                    .axis_desc_style(TextStyle::from(("sans-serif", 14).into_font()).color(&WHITE))
-                    .label_style(TextStyle::from(("sans-serif", 12).into_font()).color(&WHITE))
-                    .y_desc("Temperature [K]")
-                    .draw()
-                    .unwrap();
-                let legend_area = legend.plotting_area();
-                for i in 0..20 {
-                    let x = n_grid - 20 + i;
-                    for j in 0..n_grid {
-                        let u = j as f64 / n_grid as f64;
-                        let y = u * (cells_max - cells_min) + cells_min;
-                        legend_area
-                            .draw_pixel((x, y), &HSLColor(0.5 * u, 0.5, 0.4))
-                            .unwrap();
+                if let Some(temperature) = &self.temperature {
+                    let filename =
+                        datapath.join(format!("actuator_heat_{}_temperature.png", self.tag));
+                    let l = 4.2f64;
+                    let figure = BitMapBackend::new(&filename, (1024, 1024)).into_drawing_area();
+                    let mut axis = ChartBuilder::on(&figure)
+                        .set_label_area_size(LabelAreaPosition::Left, 50)
+                        .set_label_area_size(LabelAreaPosition::Bottom, 50)
+                        .margin_top(50)
+                        .margin_right(50)
+                        .build_cartesian_2d(-l..l, -l..l)
+                        .unwrap();
+                    plt::trimap(&self.x, &self.y, &temperature, &mut axis);
+                    let legend_plot = figure.clone();
+                    //.shrink((n_grid as u32 - 50, 40), (50, n_grid as u32 - 80));
+                    let n_grid = 800;
+                    let cells_max = temperature
+                        .iter()
+                        .cloned()
+                        .fold(f64::NEG_INFINITY, f64::max);
+                    let cells_min = temperature.iter().cloned().fold(f64::INFINITY, f64::min);
+                    let mut legend = ChartBuilder::on(&legend_plot)
+                        .set_label_area_size(LabelAreaPosition::Right, 50)
+                        .margin_top(50)
+                        .margin_bottom(50)
+                        .build_cartesian_2d(0..n_grid, cells_min..cells_max)
+                        .unwrap();
+                    legend
+                        .configure_mesh()
+                        .disable_x_mesh()
+                        .disable_y_mesh()
+                        .axis_desc_style(
+                            TextStyle::from(("sans-serif", 14).into_font()).color(&WHITE),
+                        )
+                        .label_style(TextStyle::from(("sans-serif", 12).into_font()).color(&WHITE))
+                        .y_desc("Temperature [K]")
+                        .draw()
+                        .unwrap();
+                    let legend_area = legend.plotting_area();
+                    for i in 0..20 {
+                        let x = n_grid - 20 + i;
+                        for j in 0..n_grid {
+                            let u = j as f64 / n_grid as f64;
+                            let y = u * (cells_max - cells_min) + cells_min;
+                            legend_area
+                                .draw_pixel((x, y), &HSLColor(0.5 * u, 0.5, 0.4))
+                                .unwrap();
+                        }
                     }
                 }
             }
@@ -483,7 +496,9 @@ impl Mirror {
     }
     pub fn show_whole(&self) -> Result<()> {
         let l = 13f64;
-        let filename = data_path()?.join(&self.case).join("actuator_heat_whole.png");
+        let filename = data_path()?
+            .join(&self.case)
+            .join("actuator_heat_whole.png");
         let figure = BitMapBackend::new(&filename, (1024, 1024)).into_drawing_area();
         let mut axis = ChartBuilder::on(&figure)
             .build_cartesian_2d(-l..l, -l..l)
