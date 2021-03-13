@@ -1,0 +1,20 @@
+[package]
+name = "glass"
+version = "0.1.0"
+authors = ["Rod Conan <rconan@gmto.org>"]
+edition = "2018"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+csv = "1.1.5"
+serde = { version = "1.0.123", features = ["derive"] }
+complot = { git = "https://github.com/rconan/complot.git", branch = "main" }
+zernike = {path = "/home/rconan/projects/zernike"}
+plotters = "0.3.0"
+serde-pickle = "0.6.2"
+nalgebra = "0.25.1"
+spade = "1.8.2"
+geotrans = { git = "https://github.com/rconan/geotrans.git", branch = "main" }
+gmt-kpp = { git = "https://github.com/rconan/gmt-kpp.git", branch = "main" }
+rayon = "1.5.0"
