@@ -105,6 +105,12 @@ pub fn data_path() -> Result<PathBuf> {
 #[derive(Debug, Deserialize)]
 struct Data {
     #[serde(rename = "Displacement: Magnitude (m)")]
+    pub delta_mag: f64,
+    #[serde(rename = "Displacement[i] (m)")]
+    pub delta_x: f64,
+    #[serde(rename = "Displacement[j] (m)")]
+    pub delta_y: f64,
+    #[serde(rename = "Displacement[k] (m)")]
     pub delta_z: f64,
     #[serde(rename = "Temperature (K)")]
     pub temperature: Option<f64>,
@@ -146,7 +152,7 @@ impl Segment {
         let (x, yz): (Vec<f64>, Vec<(f64, f64)>) = data
             .iter()
             .filter(|d| d.x.hypot(d.y) <= 0.5 * 8.365)
-            .map(|d| (d.x, (d.y, d.delta_z)))
+            .map(|d| (d.x + d.delta_x, (d.y + d.delta_y, d.delta_z)))
             .unzip();
         let (y, z): (Vec<f64>, Vec<f64>) = yz.into_iter().unzip();
 
