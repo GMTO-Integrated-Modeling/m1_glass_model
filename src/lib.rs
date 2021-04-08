@@ -12,9 +12,13 @@ use spade::delaunay::{
 };
 use spade::kernels::FloatKernel;
 use spade::HasPosition;
-use std::{env, fs::File, path::PathBuf};
+use std::{
+    env,
+    fs::File,
+    io::{BufReader, BufWriter},
+    path::PathBuf,
+};
 
-const N_BM: usize = 27;
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 type Triangulation = DelaunayTriangulation<Surface, FloatKernel, DelaunayWalkLocate>;
 
@@ -140,7 +144,7 @@ impl Segment {
     pub fn new(model_dir: &str, tag: &str) -> Result<Self> {
         let datapath = data_path()?
             .join(model_dir)
-            .join(format!("{}_disp_heat-act.csv", tag));
+            .join(format!("{}_disp.csv", tag));
         println!("Reading {:?}...", datapath);
         let mut rdr = csv::Reader::from_path(datapath)?;
         let mut data: Vec<Data> = vec![];
@@ -191,29 +195,44 @@ impl Segment {
             }
         })
     }
-    pub fn to_pkl<P>(&self, path: P) -> Result<()>
+    pub fn to_pkl<P>(&self, path: P, info: Info) -> Result<()>
     where
         P: AsRef<std::path::Path> + std::fmt::Display + Copy,
     {
-        if let Some(temperature) = &self.temperature {
-            use serde::Serialize;
-            #[derive(Serialize)]
-            struct Field {
-                nodes: Vec<f64>, //x0,y0,x1,y1,...
-                field: Vec<f64>,
-            };
-            let nodes: Vec<_> = self
-                .x
-                .iter()
-                .zip(self.y.iter())
-                .flat_map(|(x, y)| vec![*x, *y])
-                .collect();
-            let field = Field {
-                nodes,
-                field: temperature.clone(),
-            };
-            let mut file = File::create(data_path()?.join(&self.model_dir).join(path))?;
-            pkl::to_writer(&mut file, &field, true)?
+        use serde::Serialize;
+        #[derive(Serialize)]
+        struct Field {
+            nodes: Vec<f64>, //x0,y0,x1,y1,...
+            field: Vec<f64>,
+        };
+        let nodes: Vec<_> = self
+            .x
+            .iter()
+            .zip(self.y.iter())
+            .flat_map(|(x, y)| vec![*x, *y])
+            .collect();
+        match info {
+            Info::Temperature => {
+                if let Some(temperature) = &self.temperature {
+                    let field = Field {
+                        nodes,
+                        field: temperature.clone(),
+                    };
+                    let file = File::create(data_path()?.join(&self.model_dir).join(path))?;
+                    let mut writer = BufWriter::with_capacity(100_000, file);
+                    pkl::to_writer(&mut writer, &field, true)?
+                }
+            }
+            Info::Surface => {
+                let field = Field {
+                    nodes,
+                    field: self.z.clone(),
+                };
+                let file = File::create(data_path()?.join(&self.model_dir).join(path))?;
+                let mut writer = BufWriter::with_capacity(100_000, file);
+                pkl::to_writer(&mut writer, &field, true)?
+            }
+            _ => unimplemented!("only temperature and surface can be pickled!"),
         }
         Ok(())
     }
@@ -221,6 +240,7 @@ impl Segment {
         &self,
         surface: &[f64],
         bending: Option<BendingModes>,
+        extra_bm: Option<String>,
     ) -> Result<Vec<f64>> {
         let n_node = self.x.len();
         let z0 = na::DVector::from_element(n_node, 1f64);
@@ -228,12 +248,39 @@ impl Segment {
         let z2 = na::DVector::from_column_slice(&self.y);
         let mut projection_columns = vec![z0, z1, z2];
         bending.map(|x| {
-            let bm = x
-                .modes
-                .chunks(n_node)
-                .take(N_BM)
-                .map(|x| na::DVector::from_column_slice(x));
-            projection_columns.extend(bm);
+            let n_bm_max = 2 * x.modes.len() / x.nodes.len() - 3;
+            let n_bm = env::var("N_BM")
+                .map_or(27, |v| v.parse::<usize>().unwrap_or(27))
+                .min(n_bm_max);
+            match extra_bm {
+                Some(extras) => {
+                    let bm_idx: Vec<_> = extras
+                        .split(",")
+                        .filter_map(|x| x.parse::<usize>().ok())
+                        .collect();
+                    println!(
+                        "## Filtering first {} bending modes and modes {:?} from {} ##",
+                        n_bm, bm_idx, self.tag
+                    );
+                    let extras = bm_idx
+                        .into_iter()
+                        .filter_map(|k| x.modes.chunks(n_node).nth(k - 1));
+                    let bm = x.modes.chunks(n_node)
+                        .take(n_bm)
+                        .chain(extras)
+                        .map(|x| na::DVector::from_column_slice(x));
+                    projection_columns.extend(bm);
+                }
+                None => {
+                    println!("## Filtering {} bending modes from {} ##", n_bm, self.tag);
+                    let bm = x
+                        .modes
+                        .chunks(n_node)
+                        .take(n_bm)
+                        .map(|x| na::DVector::from_column_slice(x));
+                    projection_columns.extend(bm);
+                }
+            };
         });
         let projection = na::DMatrix::from_columns(&projection_columns);
         let projection_svd = projection.svd(true, true);
@@ -306,7 +353,7 @@ impl Segment {
             Info::ResidualSurface => {
                 let filename =
                     datapath.join(format!("actuator_heat_{}_residual-surface.png", self.tag));
-                let ze = self.filter_surface(&self.z, None)?;
+                let ze = self.filter_surface(&self.z, None, None)?;
                 let l = 4.2f64;
                 let figure = BitMapBackend::new(&filename, (1024, 1024)).into_drawing_area();
                 let mut axis = ChartBuilder::on(&figure)
@@ -379,10 +426,10 @@ pub enum Segments<T> {
     Outer(T),
 }
 impl Segments<Segment> {
-    pub fn to_pkl(&self) -> Result<&Self> {
+    pub fn to_pkl(&self, info: Info) -> Result<&Self> {
         match self {
-            Segments::Center(segment) => segment.to_pkl("center.pkl")?,
-            Segments::Outer(segment) => segment.to_pkl("outer.pkl")?,
+            Segments::Center(segment) => segment.to_pkl("center.pkl", info)?,
+            Segments::Outer(segment) => segment.to_pkl("outer.pkl", info)?,
         }
         Ok(self)
     }
@@ -403,7 +450,8 @@ impl Segments<Segment> {
             }
         };
         let bm_file = File::open(filename)?;
-        let bending: BendingModes = pkl::from_reader(bm_file)?;
+        let rdr = BufReader::with_capacity(100_000, bm_file);
+        let bending: BendingModes = pkl::from_reader(rdr)?;
         Ok(bending)
     }
     pub fn resample_on_bending_modes(&self) -> Result<Segments<Segment>> {
@@ -444,7 +492,8 @@ impl Segments<Segment> {
         let bm = self.bending_modes();
         match self {
             Segments::Center(segment) => {
-                let z = segment.filter_surface(&segment.z, bm.ok())?;
+                let extra_bm = env::var("EXTRA_BM_CENTER").ok();
+                let z = segment.filter_surface(&segment.z, bm.ok(), extra_bm)?;
                 Ok(Segments::Center(Segment {
                     tag: "center_on-bm_filtered".to_owned(),
                     z,
@@ -452,7 +501,8 @@ impl Segments<Segment> {
                 }))
             }
             Segments::Outer(segment) => {
-                let z = segment.filter_surface(&segment.z, bm.ok())?;
+                let extra_bm = env::var("EXTRA_BM_OUTER").ok();
+                let z = segment.filter_surface(&segment.z, bm.ok(), extra_bm)?;
                 Ok(Segments::Outer(Segment {
                     tag: "outer_on-bm_filtered".to_owned(),
                     z,
@@ -490,9 +540,9 @@ impl Mirror {
             case: case.to_owned(),
         })
     }
-    pub fn to_pkl(&self) -> Result<&Self> {
-        self.center.to_pkl()?;
-        self.outer.to_pkl()?;
+    pub fn to_pkl(&self, info: Info) -> Result<&Self> {
+        self.center.to_pkl(info.clone())?;
+        self.outer.to_pkl(info)?;
         Ok(self)
     }
     pub fn show(&self, info: Info) -> Result<&Self> {
