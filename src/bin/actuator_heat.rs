@@ -20,7 +20,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let opt = Opt::from_args();
     let case = opt.case;
     let mirror = Mirror::new(&case)?;
-    mirror.to_pkl()?;
+    //mirror.to_pkl(Info::Temperature)?;
     mirror.stats();
     mirror.show(Info::Temperature)?;
     mirror.show(Info::Surface)?;
