@@ -443,10 +443,10 @@ impl Segments<Segment> {
     pub fn bending_modes(&self) -> Result<BendingModes> {
         let filename = match self {
             Segments::Center(_) => {
-                "../../../gmt_m1_thermal_influence-functions/data/bending_modes_CS.pkl"
+                "data/bending_modes_CS.pkl"
             }
             Segments::Outer(_) => {
-                "../../../gmt_m1_thermal_influence-functions/data/bending_modes_OA.pkl"
+                "data/bending_modes_OA.pkl"
             }
         };
         let bm_file = File::open(filename)?;
