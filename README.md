@@ -9,6 +9,7 @@ First, install [Rust](https://www.rust-lang.org/tools/install), then at a termin
 ```
 git clone https://github.com/GMTO/m1_glass_model.git
 cd m1_glass_model
+cargo build --release
 ```
 
 To run the model, you need to also download the data in the `m1_glass_model` folder:
