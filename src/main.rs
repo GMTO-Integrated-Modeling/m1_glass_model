@@ -22,7 +22,7 @@ use structopt::StructOpt;
 /// >>> export EXTRA_BM_OUTER=46
 ///
 /// >>> export EXTRA_BM_CENTER=40
-#[structopt(name = "glass", about = "CFD M1 segment surface deformation")]
+#[structopt(name = "M1 Glass Model", about = "CFD M1 segment surface deformation")]
 struct Opt {
     /// Case folder name
     ///
