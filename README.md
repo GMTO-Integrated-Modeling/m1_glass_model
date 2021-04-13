@@ -20,7 +20,7 @@ tar -xzvf m1_glass_model.tgz
 
 ## Usage
 
-To get a description of the inputs to the model: `cargo run --release -- --help` and to run a simulation of a given case use: `cargo run --release -- --case <case_name>`, the input data will read from the case folder and the output pictures will be written to the same folder.
+To get a description of the inputs to the model: `cargo run --release -- --help` and to run a simulation of a given case use: `cargo run --release -- --case <case_name>`, the input data is read from the case folder and the output pictures are written to the same folder.
 
 There are 7 cases to choose from:
  - **case1** : Set the initial glass temperature at ambient. Simulate for 4h while ambient decreases at a rate of -0.2K/h. Assume that the actuators dissipate heat in the lower plenum and all of it is distributed in the nearest nozzles, increasing their nominal temperature above Tn. The HTC values used for the core surfaces correspond to less accurate older unsteady simulations.
