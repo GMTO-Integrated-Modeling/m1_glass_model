@@ -42,9 +42,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mirror = Mirror::new(&case)?;
     //mirror.to_pkl(Info::Temperature)?;
     mirror.stats();
-    mirror.show(Info::Temperature)?;
+    //mirror.show(Info::Temperature)?;
     mirror.show(Info::Surface)?;
-    mirror.show(Info::ResidualSurface)?;
+    //mirror.show(Info::ResidualSurface)?;
+
     let mut mirror = mirror.resample_on_bending_modes()?.filtered()?;
     mirror.stats().show(Info::Surface)?;
     mirror.to_local().show_whole()?;
@@ -52,6 +53,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let length = 25.5f64;
     let n_grid = 769;
     let (pupil, wavefront) = mirror.gridding(length, n_grid);
+    let w: Vec<_> = pupil
+        .iter()
+        .zip(wavefront.iter())
+        .filter_map(|(p, w)| if *p > 0f64 { Some(w) } else { None })
+        .collect();
+    let n = w.len() as f64;
+    let mean_w = w.iter().cloned().sum::<f64>() / n;
+    let std_w = (w
+        .into_iter()
+        .map(|x| {
+            let y = x - mean_w;
+            y * y
+        })
+        .sum::<f64>()
+        / n)
+        .sqrt()
+        * 1e9;
+    println!("WFE RMS: {:.0}nm", std_w);
     let pssn = [
         PSSN::V({
             let mut pssn = KPP::new().wavelength(500e-9).pssn(length, n_grid, &pupil);
