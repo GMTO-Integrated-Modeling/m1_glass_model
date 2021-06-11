@@ -109,7 +109,7 @@ pub fn data_path() -> Result<PathBuf> {
 #[derive(Debug, Deserialize)]
 struct Data {
     #[serde(rename = "Displacement: Magnitude (m)")]
-    pub delta_mag: f64,
+    pub delta_mag: Option<f64>,
     #[serde(rename = "Displacement[i] (m)")]
     pub delta_x: f64,
     #[serde(rename = "Displacement[j] (m)")]
@@ -204,7 +204,7 @@ impl Segment {
         struct Field {
             nodes: Vec<f64>, //x0,y0,x1,y1,...
             field: Vec<f64>,
-        };
+        }
         let nodes: Vec<_> = self
             .x
             .iter()
@@ -265,7 +265,9 @@ impl Segment {
                     let extras = bm_idx
                         .into_iter()
                         .filter_map(|k| x.modes.chunks(n_node).nth(k - 1));
-                    let bm = x.modes.chunks(n_node)
+                    let bm = x
+                        .modes
+                        .chunks(n_node)
                         .take(n_bm)
                         .chain(extras)
                         .map(|x| na::DVector::from_column_slice(x));
@@ -442,12 +444,8 @@ impl Segments<Segment> {
     }
     pub fn bending_modes(&self) -> Result<BendingModes> {
         let filename = match self {
-            Segments::Center(_) => {
-                "data/bending_modes_CS.pkl"
-            }
-            Segments::Outer(_) => {
-                "data/bending_modes_OA.pkl"
-            }
+            Segments::Center(_) => "data/bending_modes_CS.pkl",
+            Segments::Outer(_) => "data/bending_modes_OA.pkl",
         };
         let bm_file = File::open(filename)?;
         let rdr = BufReader::with_capacity(100_000, bm_file);
