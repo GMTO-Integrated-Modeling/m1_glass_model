@@ -9,8 +9,7 @@ edition = "2018"
 [dependencies]
 csv = "1.1.5"
 serde = { version = "1.0.123", features = ["derive"] }
-complot = { git = "https://github.com/rconan/complot.git", rev = "71c4da5" }
-plotters = "0.3.0"
+complot = { git = "https://github.com/rconan/complot.git", rev = "9f3be3f" }
 serde-pickle = "0.6.2"
 nalgebra = "0.25.1"
 spade = "1.8.2"
@@ -18,3 +17,4 @@ geotrans = { git = "https://github.com/rconan/geotrans.git", rev = "75268a5"}
 gmt-kpp = { git = "https://github.com/rconan/gmt-kpp.git", rev = "e081c6e" }
 rayon = "1.5.0"
 structopt = "0.3.21"
+plotters = "0.3.1"

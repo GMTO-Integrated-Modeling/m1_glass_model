@@ -1,10 +1,7 @@
 use complot as plt;
-use csv;
-use geotrans;
 use nalgebra as na;
 use plotters::prelude::*;
 use rayon::prelude::*;
-use serde;
 use serde::Deserialize;
 use serde_pickle as pkl;
 use spade::delaunay::{
@@ -22,6 +19,7 @@ use std::{
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 type Triangulation = DelaunayTriangulation<Surface, FloatKernel, DelaunayWalkLocate>;
 
+/// Prints maximum, minimum, mean and standard deviation
 pub fn stats(z: &[f64]) {
     let minmax = |z: &[f64]| {
         let z_max = z.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
@@ -36,6 +34,7 @@ pub fn stats(z: &[f64]) {
     println!(" - std:  {:4.0}nm", rms * 1e9);
 }
 
+/// Segment surface representation
 pub struct Surface {
     point: [f64; 2],
     height: f64,
@@ -60,10 +59,8 @@ fn polywind(x: f64, y: f64, vx: &[f64], vy: &[f64]) -> i32 {
             if d1 > y && q > 0.0 {
                 wind += 1;
             }
-        } else {
-            if d1 <= y && q < 0.0 {
-                wind -= 1;
-            }
+        } else if d1 <= y && q < 0.0 {
+            wind -= 1;
         }
         p0 = d0;
         p1 = d1;
@@ -79,7 +76,7 @@ fn truss_shadow(x: f64, y: f64) -> bool {
         -2.902158, 0., 2.902158, 3.107604, 0.07244, 0.518512, 0.175429, 0., -0.175429, -0.518512,
         -0.067572, -3.865336, -3.810188, -0.427592, -3.107604,
     ];
-    if (1..4).fold(0, |a, k| {
+    (1..4).fold(0, |a, k| {
         let q = geotrans::Quaternion::unit(-120f64.to_radians() * k as f64, geotrans::Vector::k());
         let (vx, vy): (Vec<f64>, Vec<f64>) = vx
             .iter()
@@ -94,13 +91,9 @@ fn truss_shadow(x: f64, y: f64) -> bool {
             })
             .unzip();
         a + polywind(x, y, &vx, &vy)
-    }) == 0
-    {
-        false
-    } else {
-        true
-    }
+    }) != 0
 }
+/// Returns the path to the M1 thermal model data
 pub fn data_path() -> Result<PathBuf> {
     let path = env::current_dir()?.join("data");
     Ok(path)
@@ -126,21 +119,45 @@ struct Data {
     pub z: f64,
 }
 
+/// M1  bending modes
 #[derive(Deserialize)]
 pub struct BendingModes {
-    pub nodes: Vec<f64>, // [x0,y0,x1,y1,...]
+    /// M1 surface nodes: [x0,y0,x1,y1,...]
+    pub nodes: Vec<f64>,
+    /// M1 modes
     pub modes: Vec<f64>,
 }
+impl std::fmt::Display for BendingModes {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let n = self.nodes.len() / 2;
+        write!(
+            f,
+            "Bending modes: {} modes , {} resolution",
+            self.modes.len() / n,
+            n,
+        )
+    }
+}
+/// M1 segment finite element model
 #[derive(Default, Clone)]
 pub struct Segment {
-    pub tag: String,
+    // center or outer
+    tag: String,
+    /// Segment surface nodes x coordinates
     pub x: Vec<f64>,
+    /// Segment surface nodes y coordinates
     pub y: Vec<f64>,
+    /// Segment surface nodes z coordinates
     pub z: Vec<f64>,
+    /// Surface temperature field
     pub temperature: Option<Vec<f64>>,
-    pub model_dir: String,
+    // data repository
+    model_dir: String,
 }
 impl Segment {
+    /// Builds a new model
+    ///
+    /// Loads surface deformation from CSV file "\<tag\>_disp.csv" in `model_dir` directory  for either `tag`="center" or `tag`="outer"
     pub fn new(model_dir: &str, tag: &str) -> Result<Self> {
         let datapath = data_path()?
             .join(model_dir)
@@ -195,6 +212,9 @@ impl Segment {
             }
         })
     }
+    /// Dumps data into a pickle file
+    ///
+    /// Pickle either [Info::Temperature] or [Info::Surface]
     pub fn to_pkl<P>(&self, path: P, info: Info) -> Result<()>
     where
         P: AsRef<std::path::Path> + std::fmt::Display + Copy,
@@ -236,18 +256,35 @@ impl Segment {
         }
         Ok(())
     }
+    /// Filters surface deformation
+    ///
+    /// Least square fits and removes piston, tip, tilt and bending modes
     pub fn filter_surface(
         &self,
         surface: &[f64],
         bending: Option<BendingModes>,
         extra_bm: Option<String>,
+        rbms: Option<Vec<f64>>,
     ) -> Result<Vec<f64>> {
         let n_node = self.x.len();
-        let z0 = na::DVector::from_element(n_node, 1f64);
-        let z1 = na::DVector::from_column_slice(&self.x);
-        let z2 = na::DVector::from_column_slice(&self.y);
-        let mut projection_columns = vec![z0, z1, z2];
-        bending.map(|x| {
+        let mut projection_columns = match rbms {
+            Some(ref rbms) => {
+                println!("## Filtering M1 rigid body motions ##");
+                rbms.chunks(n_node)
+                    .map(|x| na::DVector::from_column_slice(x))
+                    .chain(Some(na::DVector::from_element(n_node, 1f64)))
+                    .collect()
+            }
+            None => {
+                println!("## Filtering piston, tip and tilt ##");
+                let z0 = na::DVector::from_element(n_node, 1f64);
+                let z1 = na::DVector::from_column_slice(&self.x);
+                let z2 = na::DVector::from_column_slice(&self.y);
+                vec![z0, z1, z2]
+            }
+        };
+        println!("## # of modes: {} ##", projection_columns.len());
+        if let Some(x) = bending {
             let n_bm_max = 2 * x.modes.len() / x.nodes.len() - 3;
             let n_bm = env::var("N_BM")
                 .map_or(27, |v| v.parse::<usize>().unwrap_or(27))
@@ -255,7 +292,7 @@ impl Segment {
             match extra_bm {
                 Some(extras) => {
                     let bm_idx: Vec<_> = extras
-                        .split(",")
+                        .split(',')
                         .filter_map(|x| x.parse::<usize>().ok())
                         .collect();
                     println!(
@@ -283,8 +320,9 @@ impl Segment {
                     projection_columns.extend(bm);
                 }
             };
-        });
+        };
         let projection = na::DMatrix::from_columns(&projection_columns);
+        println!("projection: {:?}", projection.shape());
         let projection_svd = projection.svd(true, true);
         let u = projection_svd
             .u
@@ -293,8 +331,26 @@ impl Segment {
         let s = na::DVector::from_column_slice(surface);
         let w = &u.transpose() * &s;
         let q = s - u * w;
-        Ok(q.as_slice().to_vec())
+        match rbms {
+            Some(rbms) if self.tag == "outer_on-bm" => {
+                let pupil = rbms.chunks(n_node).fold(vec![1f64; n_node], |mut s, x| {
+                    x.iter().zip(s.iter_mut()).for_each(|(x, s)| {
+                        if *x == 0f64 {
+                            *s = 0f64
+                        }
+                    });
+                    s
+                });
+                Ok(q.as_slice()
+                    .iter()
+                    .zip(pupil.iter())
+                    .map(|(x, p)| x * p)
+                    .collect::<Vec<f64>>())
+            }
+            _ => Ok(q.as_slice().to_vec()),
+        }
     }
+    /// Delaunay triangulates the surface
     pub fn triangulate(&self, z: &[f64]) -> Triangulation {
         let mut tri = FloatDelaunayTriangulation::with_walk_locate();
         self.x
@@ -309,6 +365,9 @@ impl Segment {
             });
         tri
     }
+    /// Barycentric interpolation of the surface
+    ///
+    /// Interpolant coordinates are given as [chunks](std::slice::chunks) of size 2: [x,y]
     pub fn interpolate<'a>(
         &self,
         xyi: impl Iterator<Item = &'a [f64]>,
@@ -316,10 +375,13 @@ impl Segment {
     ) -> Result<Vec<f64>> {
         xyi.map(|xyi| {
             tri.barycentric_interpolation(&[xyi[0], xyi[1]], |p| p.height)
-                .ok_or("Failed interpolation".into())
+                .ok_or_else(|| "Failed interpolation".into())
         })
         .collect()
     }
+    /// Geometric transformation of the surface coordinates system
+    ///
+    /// The surface coordinates are transformed in M1 segment coordinates
     pub fn to_local(mut self, sid: usize) -> Self {
         self.x.iter_mut().zip(self.y.iter_mut()).for_each(|(x, y)| {
             let v = geotrans::oss_to_any_m1(sid, [*x, *y, 0.]);
@@ -329,6 +391,7 @@ impl Segment {
         self
     }
 }
+/// Information data type
 #[derive(Clone)]
 pub enum Info {
     Surface,
@@ -350,12 +413,12 @@ impl Segment {
                     .margin_right(50)
                     .build_cartesian_2d(-l..l, -l..l)
                     .unwrap();
-                plt::trimap(&self.x, &self.y, &self.z, &mut axis);
+                plt::tri::trimap(&self.x, &self.y, &self.z, &mut axis);
             }
             Info::ResidualSurface => {
                 let filename =
                     datapath.join(format!("actuator_heat_{}_residual-surface.png", self.tag));
-                let ze = self.filter_surface(&self.z, None, None)?;
+                let ze = self.filter_surface(&self.z, None, None, None)?;
                 let l = 4.2f64;
                 let figure = BitMapBackend::new(&filename, (1024, 1024)).into_drawing_area();
                 let mut axis = ChartBuilder::on(&figure)
@@ -365,7 +428,7 @@ impl Segment {
                     .margin_right(50)
                     .build_cartesian_2d(-l..l, -l..l)
                     .unwrap();
-                plt::trimap(&self.x, &self.y, &ze, &mut axis);
+                plt::tri::trimap(&self.x, &self.y, &ze, &mut axis);
             }
             Info::Temperature => {
                 if let Some(temperature) = &self.temperature {
@@ -380,7 +443,7 @@ impl Segment {
                         .margin_right(50)
                         .build_cartesian_2d(-l..l, -l..l)
                         .unwrap();
-                    plt::trimap(&self.x, &self.y, &temperature, &mut axis);
+                    plt::tri::trimap(&self.x, &self.y, &temperature, &mut axis);
                     let legend_plot = figure.clone();
                     //.shrink((n_grid as u32 - 50, 40), (50, n_grid as u32 - 80));
                     let n_grid = 800;
@@ -423,11 +486,17 @@ impl Segment {
         Ok(self)
     }
 }
+/// Segment type variants
 pub enum Segments<T> {
+    /// Center segment
     Center(T),
+    /// Outer segment
     Outer(T),
 }
 impl Segments<Segment> {
+    /// Dumps segment data into a pickle file
+    ///
+    /// Pickle either [Info::Temperature] or [Info::Surface] into `center.pkl` or `outer.pkl`
     pub fn to_pkl(&self, info: Info) -> Result<&Self> {
         match self {
             Segments::Center(segment) => segment.to_pkl("center.pkl", info)?,
@@ -442,6 +511,9 @@ impl Segments<Segment> {
         };
         Ok(self)
     }
+    /// Loads the bending modes
+    ///
+    /// The bending modes are expected to be in the data directory in the files `data/bending_modes_CS.pkl` or `data/bending_modes_OA.pkl`
     pub fn bending_modes(&self) -> Result<BendingModes> {
         let filename = match self {
             Segments::Center(_) => "data/bending_modes_CS.pkl",
@@ -452,6 +524,7 @@ impl Segments<Segment> {
         let bending: BendingModes = pkl::from_reader(rdr)?;
         Ok(bending)
     }
+    /// Resamples the segment surface onto bending modes nodes coordinates
     pub fn resample_on_bending_modes(&self) -> Result<Segments<Segment>> {
         match self {
             Segments::Center(segment) => {
@@ -486,12 +559,21 @@ impl Segments<Segment> {
             }
         }
     }
+    /// Filters surface deformation
+    ///
+    /// Least square fits and removes piston, tip, tilt and bending modes
     pub fn filter_surface(self) -> Result<Segments<Segment>> {
         let bm = self.bending_modes();
         match self {
             Segments::Center(segment) => {
+                let rbms: Option<Vec<f64>> = env::var("RBMS")
+                    .and({
+                        let file = File::open("data/RBMS_CS.pkl")?;
+                        Ok(pkl::from_reader(&file)?)
+                    })
+                    .ok();
                 let extra_bm = env::var("EXTRA_BM_CENTER").ok();
-                let z = segment.filter_surface(&segment.z, bm.ok(), extra_bm)?;
+                let z = segment.filter_surface(&segment.z, bm.ok(), extra_bm, rbms)?;
                 Ok(Segments::Center(Segment {
                     tag: "center_on-bm_filtered".to_owned(),
                     z,
@@ -499,8 +581,14 @@ impl Segments<Segment> {
                 }))
             }
             Segments::Outer(segment) => {
+                let rbms: Option<Vec<f64>> = env::var("RBMS")
+                    .and({
+                        let file = File::open("data/RBMS_OA.pkl")?;
+                        Ok(pkl::from_reader(&file)?)
+                    })
+                    .ok();
                 let extra_bm = env::var("EXTRA_BM_OUTER").ok();
-                let z = segment.filter_surface(&segment.z, bm.ok(), extra_bm)?;
+                let z = segment.filter_surface(&segment.z, bm.ok(), extra_bm, rbms)?;
                 Ok(Segments::Outer(Segment {
                     tag: "outer_on-bm_filtered".to_owned(),
                     z,
@@ -509,12 +597,14 @@ impl Segments<Segment> {
             }
         }
     }
+    /// Prints segment surface statistics
     pub fn stats(&self) {
         match self {
             Segments::Center(segment) => stats(&segment.z),
             Segments::Outer(segment) => stats(&segment.z),
         };
     }
+    /// Clones segments and transforms the surface into the segment coordinates system
     pub fn clone_to(&mut self, sid: usize) -> Segment {
         match self {
             Segments::Center(segment) => segment.clone().to_local(sid),
@@ -522,7 +612,7 @@ impl Segments<Segment> {
         }
     }
 }
-
+/// M1 seven segments mirror assembly
 pub struct Mirror {
     center: Segments<Segment>,
     outer: Segments<Segment>,
@@ -530,6 +620,7 @@ pub struct Mirror {
     case: String,
 }
 impl Mirror {
+    /// Creates a new mirror from a given case path
     pub fn new(case: &str) -> Result<Self> {
         Ok(Self {
             outer: Segments::Outer(Segment::new(case, "outer")?),
@@ -538,6 +629,7 @@ impl Mirror {
             case: case.to_owned(),
         })
     }
+    /// Dumps segments data to pickle file
     pub fn to_pkl(&self, info: Info) -> Result<&Self> {
         self.center.to_pkl(info.clone())?;
         self.outer.to_pkl(info)?;
@@ -561,9 +653,10 @@ impl Mirror {
             .as_ref()
             .unwrap()
             .iter()
-            .for_each(|s| plt::trimap(&s.x, &s.y, &s.z, &mut axis));
+            .for_each(|s| plt::tri::trimap(&s.x, &s.y, &s.z, &mut axis));
         Ok(())
     }
+    /// Resamples the segments surface onto bending modes nodes coordinates
     pub fn resample_on_bending_modes(self) -> Result<Mirror> {
         Ok(Mirror {
             center: self.center.resample_on_bending_modes()?,
@@ -572,6 +665,9 @@ impl Mirror {
             case: self.case,
         })
     }
+    /// Filters segments surface deformation
+    ///
+    /// Least square fits and removes piston, tip, tilt and bending modes
     pub fn filtered(self) -> Result<Mirror> {
         Ok(Mirror {
             center: self.center.filter_surface()?,
@@ -580,6 +676,7 @@ impl Mirror {
             case: self.case,
         })
     }
+    /// Prints segment surface statistics
     pub fn stats(&self) -> &Self {
         println!("Center");
         self.center.stats();
@@ -587,6 +684,9 @@ impl Mirror {
         self.outer.stats();
         self
     }
+    /// Geometric transformation of segments surface coordinates
+    ///
+    /// The surface coordinates are transformed in M1 segment coordinates
     pub fn to_local(&mut self) -> &Self {
         let mut segments: Vec<_> = (1..=6)
             .into_iter()
@@ -596,6 +696,10 @@ impl Mirror {
         self.segments = Some(segments);
         self
     }
+    /// Interpolates segments surface deformation on a regular mesh
+    ///
+    /// Interpolates the seven segments on a regular `n_grid`X`n_grid` mesh of size `length`[m] X `length`[m]
+    /// Outputs are the pupil (1 inside segments, 0 outside) and the wavefront as the interpolated surfaces X2
     pub fn gridding(&self, length: f64, n_grid: usize) -> (Vec<f64>, Vec<f64>) {
         let tri: Vec<Triangulation> = self
             .segments
@@ -622,10 +726,8 @@ impl Mirror {
         (0..n_grid * n_grid)
             .into_par_iter()
             .map(|k| {
-                let i = k / n_grid;
-                let j = k % n_grid;
-                let x = i as f64 * d - 0.5 * length;
-                let y = j as f64 * d - 0.5 * length;
+                let x = (k / n_grid) as f64 * d - 0.5 * length;
+                let y = (k % n_grid) as f64 * d - 0.5 * length;
                 if x.hypot(y) < 1.75 || truss_shadow(x, y) {
                     (0f64, 0f64)
                 } else {

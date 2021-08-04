@@ -1,6 +1,6 @@
+use complot as plt;
 use glass::{Info, Mirror};
 use gmt_kpp::KPP;
-use plotters::prelude::*;
 use structopt::StructOpt;
 
 #[derive(Debug, StructOpt)]
@@ -70,7 +70,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         / n)
         .sqrt()
         * 1e9;
-    println!("WFE RMS: {:.0}nm", std_w);
+    println!("WFE RMS: {:.3}nm", std_w);
     let pssn = [
         PSSN::V({
             let mut pssn = KPP::new().wavelength(500e-9).pssn(length, n_grid, &pupil);
@@ -81,45 +81,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             pssn.estimate(&pupil, Some(&wavefront))
         }),
     ];
-    println!("PSSN:{:.4?}", pssn);
+    println!("PSSN:{:.6?}", pssn);
 
     let filename = glass::data_path()?.join(&case).join("wavefront.png");
-    let plot = BitMapBackend::new(&filename, (n_grid as u32 + 100, n_grid as u32 + 100))
-        .into_drawing_area();
-    plot.fill(&BLACK).unwrap();
-    let l = length / 2.;
-    let mut chart = ChartBuilder::on(&plot)
-        .set_label_area_size(LabelAreaPosition::Left, 50)
-        .set_label_area_size(LabelAreaPosition::Bottom, 50)
-        .margin_top(50)
-        .margin_right(50)
-        .build_cartesian_2d(-l..l, -l..l)
-        .unwrap();
-    chart
-        .configure_mesh()
-        .disable_x_mesh()
-        .disable_y_mesh()
-        .draw()
-        .unwrap();
-    let cells_max = wavefront.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
-    let cells_min = wavefront.iter().cloned().fold(f64::INFINITY, f64::min);
-    let unit_wavefront: Vec<f64> = wavefront
-        .iter()
-        .map(|p| (p - cells_min) / (cells_max - cells_min))
-        .collect();
-    let plotting_area = chart.plotting_area();
-    let d = length / (n_grid - 1) as f64;
-    for i in 0..n_grid {
-        let x = i as f64 * d - 0.5 * length;
-        for j in 0..n_grid {
-            let y = j as f64 * d - 0.5 * length;
-            let ij = i * n_grid + j;
-            if pupil[ij] != 0.0 {
-                plotting_area
-                    .draw_pixel((x, y), &HSLColor(0.5 * unit_wavefront[ij], 0.5, 0.4))
-                    .unwrap();
-            }
-        }
-    }
+    let _: plt::Heatmap<f64> = (
+        (
+            wavefront
+                .iter()
+                .map(|x| x * 1e9)
+                .collect::<Vec<f64>>()
+                .as_slice(),
+            (n_grid, n_grid),
+        ),
+        plt::Config::new()
+            .filename(filename.to_str().unwrap())
+            .xaxis(plt::XAxis::new().label("Wavefront error [nm]")),
+    )
+        .into();
     Ok(())
 }
