@@ -18,20 +18,50 @@ use std::{
 
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 type Triangulation = DelaunayTriangulation<Surface, FloatKernel, DelaunayWalkLocate>;
+type DataShape = (Vec<f64>, (usize, usize));
 
 /// Prints maximum, minimum, mean and standard deviation
-pub fn stats(z: &[f64]) {
+pub fn stats(segment: &Segment) {
+    let z = &segment.z;
     let minmax = |z: &[f64]| {
         let z_max = z.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
         let z_min = z.iter().cloned().fold(f64::INFINITY, f64::min);
-        println!(" - min/max: [{:4.0};{:4.0}]nm", 1e9 * z_min, 1e9 * z_max);
+        println!("   - min/max: [{:4.0};{:4.0}]nm", 1e9 * z_min, 1e9 * z_max);
     };
+    println!(" - Surface:");
     minmax(z);
     let n = z.len() as f64;
     let z_mean = z.iter().sum::<f64>() / n;
-    println!(" - mean: {:4.0}nm", z_mean * 1e9);
+    println!("   - mean: {:4.0}nm", z_mean * 1e9);
     let rms = (z.iter().map(|x| (x - z_mean).powf(2f64)).sum::<f64>() / n).sqrt();
-    println!(" - std:  {:4.0}nm", rms * 1e9);
+    println!("   - std:  {:4.0}nm", rms * 1e9);
+    if let Some(ref bm_f) = segment.bm_forces {
+        println!(" - Forces:");
+        let pucks: (Vec<f64>, Vec<f64>) =
+            pkl::from_reader(File::open("data/pucks.pkl").unwrap()).unwrap();
+        let f: Vec<f64> = if segment.tag.starts_with("center") {
+            bm_f.iter()
+                .zip(pucks.0.iter())
+                .map(|(f, p)| *f / (*p))
+                .collect()
+        } else {
+            bm_f.iter()
+                .zip(pucks.1.iter())
+                .map(|(f, p)| *f / (*p))
+                .collect()
+        };
+        let minmax = |f: &[f64]| {
+            let f_max = f.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+            let f_min = f.iter().cloned().fold(f64::INFINITY, f64::min);
+            println!("   - min/max: [{:7.3};{:7.3}]N", f_min, f_max);
+        };
+        minmax(&f);
+        let n = f.len() as f64;
+        let f_mean = f.iter().sum::<f64>() / n;
+        println!("   - mean: {:7.3}N", f_mean);
+        let rms = (f.iter().map(|x| (x - f_mean).powf(2f64)).sum::<f64>() / n).sqrt();
+        println!("   - std:  {:7.3}N", rms);
+    }
 }
 
 /// Segment surface representation
@@ -153,6 +183,8 @@ pub struct Segment {
     pub temperature: Option<Vec<f64>>,
     // data repository
     model_dir: String,
+    /// Bending modes forces
+    pub bm_forces: Option<Vec<f64>>,
 }
 impl Segment {
     /// Builds a new model
@@ -196,6 +228,7 @@ impl Segment {
                 z,
                 temperature: None,
                 model_dir: model_dir.to_owned(),
+                ..Default::default()
             }
         } else {
             //println!("Surface [nm]:");
@@ -209,6 +242,7 @@ impl Segment {
                 z,
                 temperature: Some(temperature),
                 model_dir: model_dir.to_owned(),
+                ..Default::default()
             }
         })
     }
@@ -265,7 +299,8 @@ impl Segment {
         bending: Option<BendingModes>,
         extra_bm: Option<String>,
         rbms: Option<Vec<f64>>,
-    ) -> Result<Vec<f64>> {
+        force_matrix: Option<DataShape>,
+    ) -> Result<(Vec<f64>, Option<Vec<f64>>)> {
         let n_node = self.x.len();
         let mut projection_columns = match rbms {
             Some(ref rbms) => {
@@ -283,8 +318,8 @@ impl Segment {
                 vec![z0, z1, z2]
             }
         };
-        println!("## # of modes: {} ##", projection_columns.len());
-        if let Some(x) = bending {
+        //        println!("## # of modes: {} ##", projection_columns.len());
+        if let Some(ref x) = bending {
             let n_bm_max = 2 * x.modes.len() / x.nodes.len() - 3;
             let n_bm = env::var("N_BM")
                 .map_or(27, |v| v.parse::<usize>().unwrap_or(27))
@@ -322,7 +357,7 @@ impl Segment {
             };
         };
         let projection = na::DMatrix::from_columns(&projection_columns);
-        println!("projection: {:?}", projection.shape());
+        //      println!("projection: {:?}", projection.shape());
         let projection_svd = projection.svd(true, true);
         let u = projection_svd
             .u
@@ -330,6 +365,16 @@ impl Segment {
             .ok_or("Failed getting left eigen modes")?;
         let s = na::DVector::from_column_slice(surface);
         let w = &u.transpose() * &s;
+        let filename = format!("{}_coefs.pkl", self.tag);
+        let ww = w.as_slice().to_owned();
+        pkl::to_writer(&mut File::create(filename).unwrap(), &ww, true).unwrap();
+
+        let forces = if let (Some(ref fm), Some(ref bm)) = (force_matrix, bending) {
+            Some(self.forces(&w.as_slice()[13..], bm, fm))
+        } else {
+            None
+        };
+
         let q = s - u * w;
         match rbms {
             Some(rbms) if self.tag == "outer_on-bm" => {
@@ -341,14 +386,37 @@ impl Segment {
                     });
                     s
                 });
-                Ok(q.as_slice()
-                    .iter()
-                    .zip(pupil.iter())
-                    .map(|(x, p)| x * p)
-                    .collect::<Vec<f64>>())
+                Ok((
+                    q.as_slice()
+                        .iter()
+                        .zip(pupil.iter())
+                        .map(|(x, p)| x * p)
+                        .collect::<Vec<f64>>(),
+                    forces,
+                ))
             }
-            _ => Ok(q.as_slice().to_vec()),
+            _ => Ok((q.as_slice().to_vec(), forces)),
         }
+    }
+    /// Derives the actuator forces from the bending modes
+    pub fn forces(&self, b: &[f64], bending: &BendingModes, force_matrix: &DataShape) -> Vec<f64> {
+        let b2f = {
+            let n_mode = bending.modes.len() / (bending.nodes.len() / 2);
+            let fm = na::DMatrix::from_column_slice(
+                force_matrix.1 .0,
+                force_matrix.1 .1,
+                &force_matrix.0,
+            );
+            let fm_svd = fm.svd(true, true);
+            fm_svd.v_t.unwrap().transpose()
+                * na::DMatrix::from_diagonal(&fm_svd.singular_values.map(|x| x.recip()))
+        };
+        {
+            let n_b = b.len();
+            b2f.columns(0, n_b) * na::DVector::from_column_slice(b)
+        }
+        .as_slice()
+        .to_vec()
     }
     /// Delaunay triangulates the surface
     pub fn triangulate(&self, z: &[f64]) -> Triangulation {
@@ -418,7 +486,7 @@ impl Segment {
             Info::ResidualSurface => {
                 let filename =
                     datapath.join(format!("actuator_heat_{}_residual-surface.png", self.tag));
-                let ze = self.filter_surface(&self.z, None, None, None)?;
+                let (ze, _) = self.filter_surface(&self.z, None, None, None, None)?;
                 let l = 4.2f64;
                 let figure = BitMapBackend::new(&filename, (1024, 1024)).into_drawing_area();
                 let mut axis = ChartBuilder::on(&figure)
@@ -524,6 +592,19 @@ impl Segments<Segment> {
         let bending: BendingModes = pkl::from_reader(rdr)?;
         Ok(bending)
     }
+    /// Loads the bending modes force matrix
+    ///
+    /// The bending modes force matrices are expected to be in the data directory in the files `data/bending_modes_CS_af.pkl` or `data/bending_modes_OA_af.pkl`
+    pub fn bending_modes_force_matrix(&self) -> Result<DataShape> {
+        let filename = match self {
+            Segments::Center(_) => "data/bending_modes_CS_af.pkl",
+            Segments::Outer(_) => "data/bending_modes_OA_af.pkl",
+        };
+        let bm_file = File::open(filename)?;
+        let rdr = BufReader::with_capacity(100_000, bm_file);
+        let force_matrix: DataShape = pkl::from_reader(rdr)?;
+        Ok(force_matrix)
+    }
     /// Resamples the segment surface onto bending modes nodes coordinates
     pub fn resample_on_bending_modes(&self) -> Result<Segments<Segment>> {
         match self {
@@ -564,6 +645,7 @@ impl Segments<Segment> {
     /// Least square fits and removes piston, tip, tilt and bending modes
     pub fn filter_surface(self) -> Result<Segments<Segment>> {
         let bm = self.bending_modes();
+        let fm = self.bending_modes_force_matrix();
         match self {
             Segments::Center(segment) => {
                 let rbms: Option<Vec<f64>> = env::var("RBMS")
@@ -573,10 +655,12 @@ impl Segments<Segment> {
                     })
                     .ok();
                 let extra_bm = env::var("EXTRA_BM_CENTER").ok();
-                let z = segment.filter_surface(&segment.z, bm.ok(), extra_bm, rbms)?;
+                let (z, f) =
+                    segment.filter_surface(&segment.z, bm.ok(), extra_bm, rbms, fm.ok())?;
                 Ok(Segments::Center(Segment {
                     tag: "center_on-bm_filtered".to_owned(),
                     z,
+                    bm_forces: f,
                     ..segment
                 }))
             }
@@ -588,10 +672,12 @@ impl Segments<Segment> {
                     })
                     .ok();
                 let extra_bm = env::var("EXTRA_BM_OUTER").ok();
-                let z = segment.filter_surface(&segment.z, bm.ok(), extra_bm, rbms)?;
+                let (z, f) =
+                    segment.filter_surface(&segment.z, bm.ok(), extra_bm, rbms, fm.ok())?;
                 Ok(Segments::Outer(Segment {
                     tag: "outer_on-bm_filtered".to_owned(),
                     z,
+                    bm_forces: f,
                     ..segment
                 }))
             }
@@ -600,8 +686,8 @@ impl Segments<Segment> {
     /// Prints segment surface statistics
     pub fn stats(&self) {
         match self {
-            Segments::Center(segment) => stats(&segment.z),
-            Segments::Outer(segment) => stats(&segment.z),
+            Segments::Center(segment) => stats(&segment),
+            Segments::Outer(segment) => stats(&segment),
         };
     }
     /// Clones segments and transforms the surface into the segment coordinates system

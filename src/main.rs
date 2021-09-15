@@ -9,7 +9,10 @@ use structopt::StructOpt;
 /// Load the surface thermal deformation for the outer and center segment from 2 files:
 /// "outer_disp.csv" and "center_disp.csv", respectively, according to the selected case.
 /// Per default, piston, tilt-tilt and the fist 27 bending modes are fitted to and
-/// removed from the surfaces. The number of bending modes is altered with the environment
+/// removed from the surfaces.
+/// Instead of piston and tip-tilt, M1 and M2 rigid body motions can be used by setting
+/// the environment variable RBMS-1.
+/// The number of bending modes is altered with the environment
 /// variable N_BM; if  N_BM is larger than the total number of bending modes,
 /// it is clipped to 162 for the outer segment and 151 for the center segment.
 /// Bending modes can also be selected one-by-one with the environment variables
@@ -42,7 +45,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mirror = Mirror::new(&case)?;
     //mirror.to_pkl(Info::Temperature)?;
     mirror.stats();
-    //mirror.show(Info::Temperature)?;
+    mirror.show(Info::Temperature)?;
     mirror.show(Info::Surface)?;
     //mirror.show(Info::ResidualSurface)?;
 
