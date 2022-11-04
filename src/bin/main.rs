@@ -11,7 +11,7 @@ use structopt::StructOpt;
 /// Per default, piston, tilt-tilt and the fist 27 bending modes are fitted to and
 /// removed from the surfaces.
 /// Instead of piston and tip-tilt, M1 and M2 rigid body motions can be used by setting
-/// the environment variable RBMS-1.
+/// the environment variable RBMS=1.
 /// The number of bending modes is altered with the environment
 /// variable N_BM; if  N_BM is larger than the total number of bending modes,
 /// it is clipped to 162 for the outer segment and 151 for the center segment.
@@ -40,6 +40,8 @@ enum PSSN {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    env_logger::init();
+
     let opt = Opt::from_args();
     let case = opt.case;
     let mirror = Mirror::new(&case)?;

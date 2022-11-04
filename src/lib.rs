@@ -16,6 +16,8 @@ use std::{
     path::PathBuf,
 };
 
+const N_BM_DEFAULT: usize = 27;
+
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 type Triangulation = DelaunayTriangulation<Surface, FloatKernel, DelaunayWalkLocate>;
 type DataShape = (Vec<f64>, (usize, usize));
@@ -38,7 +40,7 @@ pub fn stats(segment: &Segment) {
     if let Some(ref bm_f) = segment.bm_forces {
         println!(" - Forces:");
         let pucks: (Vec<f64>, Vec<f64>) =
-            pkl::from_reader(File::open("data/pucks.pkl").unwrap()).unwrap();
+            pkl::from_reader(File::open("data/pucks.pkl").unwrap(), Default::default()).unwrap();
         let f: Vec<f64> = if segment.tag.starts_with("center") {
             bm_f.iter()
                 .zip(pucks.0.iter())
@@ -129,6 +131,7 @@ pub fn data_path() -> Result<PathBuf> {
     Ok(path)
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 struct Data {
     #[serde(rename = "Displacement: Magnitude (m)")]
@@ -185,6 +188,7 @@ pub struct Segment {
     model_dir: String,
     /// Bending modes forces
     pub bm_forces: Option<Vec<f64>>,
+    n_bm: usize,
 }
 impl Segment {
     /// Builds a new model
@@ -228,6 +232,7 @@ impl Segment {
                 z,
                 temperature: None,
                 model_dir: model_dir.to_owned(),
+                n_bm: N_BM_DEFAULT,
                 ..Default::default()
             }
         } else {
@@ -242,8 +247,15 @@ impl Segment {
                 z,
                 temperature: Some(temperature),
                 model_dir: model_dir.to_owned(),
+                n_bm: N_BM_DEFAULT,
                 ..Default::default()
             }
+        })
+    }
+    pub fn new_with(model_dir: &str, tag: &str, n_bm: usize) -> Result<Self> {
+        Self::new(model_dir, tag).map(|mut x| {
+            x.n_bm = n_bm;
+            x
         })
     }
     /// Dumps data into a pickle file
@@ -274,7 +286,7 @@ impl Segment {
                     };
                     let file = File::create(data_path()?.join(&self.model_dir).join(path))?;
                     let mut writer = BufWriter::with_capacity(100_000, file);
-                    pkl::to_writer(&mut writer, &field, true)?
+                    pkl::to_writer(&mut writer, &field, Default::default())?
                 }
             }
             Info::Surface => {
@@ -284,7 +296,7 @@ impl Segment {
                 };
                 let file = File::create(data_path()?.join(&self.model_dir).join(path))?;
                 let mut writer = BufWriter::with_capacity(100_000, file);
-                pkl::to_writer(&mut writer, &field, true)?
+                pkl::to_writer(&mut writer, &field, Default::default())?
             }
             _ => unimplemented!("only temperature and surface can be pickled!"),
         }
@@ -298,6 +310,7 @@ impl Segment {
         surface: &[f64],
         bending: Option<BendingModes>,
         extra_bm: Option<String>,
+        only_bm: Option<String>,
         rbms: Option<Vec<f64>>,
         force_matrix: Option<DataShape>,
     ) -> Result<(Vec<f64>, Option<Vec<f64>>)> {
@@ -318,11 +331,12 @@ impl Segment {
                 vec![z0, z1, z2]
             }
         };
-        //        println!("## # of modes: {} ##", projection_columns.len());
+        let n_rbm = projection_columns.len();
+        // println!("## # of modes: {} ##", n_rbm);
         if let Some(ref x) = bending {
             let n_bm_max = 2 * x.modes.len() / x.nodes.len() - 3;
             let n_bm = env::var("N_BM")
-                .map_or(27, |v| v.parse::<usize>().unwrap_or(27))
+                .map_or(self.n_bm, |v| v.parse::<usize>().unwrap_or(self.n_bm))
                 .min(n_bm_max);
             match extra_bm {
                 Some(extras) => {
@@ -359,15 +373,34 @@ impl Segment {
         let projection = na::DMatrix::from_columns(&projection_columns);
         //      println!("projection: {:?}", projection.shape());
         let projection_svd = projection.svd(true, true);
+        let sing_values = projection_svd.singular_values;
+        let cond = sing_values.max() / sing_values.min();
+        log::debug!("Projection condition #: {:.6e}", cond);
         let u = projection_svd
             .u
             .as_ref()
             .ok_or("Failed getting left eigen modes")?;
         let s = na::DVector::from_column_slice(surface);
-        let w = &u.transpose() * &s;
+        let mut w = &u.transpose() * &s;
+        if let Some(onlys) = only_bm {
+            let bm_idx: Vec<_> = onlys
+                .split(',')
+                .filter_map(|x| x.parse::<usize>().ok())
+                .collect();
+            w.iter_mut()
+                .skip(n_rbm)
+                .enumerate()
+                .filter(|(i, _)| !bm_idx.contains(&(*i + 1)))
+                .for_each(|(_, w)| *w = 0f64);
+        }
         let filename = format!("{}_coefs.pkl", self.tag);
         let ww = w.as_slice().to_owned();
-        pkl::to_writer(&mut File::create(filename).unwrap(), &ww, true).unwrap();
+        pkl::to_writer(
+            &mut File::create(filename).unwrap(),
+            &ww,
+            Default::default(),
+        )
+        .unwrap();
 
         let forces = if let (Some(ref fm), Some(ref bm)) = (force_matrix, bending) {
             Some(self.forces(&w.as_slice()[13..], bm, fm))
@@ -399,9 +432,9 @@ impl Segment {
         }
     }
     /// Derives the actuator forces from the bending modes
-    pub fn forces(&self, b: &[f64], bending: &BendingModes, force_matrix: &DataShape) -> Vec<f64> {
+    pub fn forces(&self, b: &[f64], _bending: &BendingModes, force_matrix: &DataShape) -> Vec<f64> {
         let b2f = {
-            let n_mode = bending.modes.len() / (bending.nodes.len() / 2);
+            // let n_mode = bending.modes.len() / (bending.nodes.len() / 2);
             let fm = na::DMatrix::from_column_slice(
                 force_matrix.1 .0,
                 force_matrix.1 .1,
@@ -486,7 +519,7 @@ impl Segment {
             Info::ResidualSurface => {
                 let filename =
                     datapath.join(format!("actuator_heat_{}_residual-surface.png", self.tag));
-                let (ze, _) = self.filter_surface(&self.z, None, None, None, None)?;
+                let (ze, _) = self.filter_surface(&self.z, None, None, None, None, None)?;
                 let l = 4.2f64;
                 let figure = BitMapBackend::new(&filename, (1024, 1024)).into_drawing_area();
                 let mut axis = ChartBuilder::on(&figure)
@@ -589,7 +622,7 @@ impl Segments<Segment> {
         };
         let bm_file = File::open(filename)?;
         let rdr = BufReader::with_capacity(100_000, bm_file);
-        let bending: BendingModes = pkl::from_reader(rdr)?;
+        let bending: BendingModes = pkl::from_reader(rdr, Default::default())?;
         Ok(bending)
     }
     /// Loads the bending modes force matrix
@@ -602,7 +635,7 @@ impl Segments<Segment> {
         };
         let bm_file = File::open(filename)?;
         let rdr = BufReader::with_capacity(100_000, bm_file);
-        let force_matrix: DataShape = pkl::from_reader(rdr)?;
+        let force_matrix: DataShape = pkl::from_reader(rdr, Default::default())?;
         Ok(force_matrix)
     }
     /// Resamples the segment surface onto bending modes nodes coordinates
@@ -651,12 +684,19 @@ impl Segments<Segment> {
                 let rbms: Option<Vec<f64>> = env::var("RBMS")
                     .and({
                         let file = File::open("data/RBMS_CS.pkl")?;
-                        Ok(pkl::from_reader(&file)?)
+                        Ok(pkl::from_reader(&file, Default::default())?)
                     })
                     .ok();
                 let extra_bm = env::var("EXTRA_BM_CENTER").ok();
-                let (z, f) =
-                    segment.filter_surface(&segment.z, bm.ok(), extra_bm, rbms, fm.ok())?;
+                let only_bm = env::var("ONLY_BM_CENTER").ok();
+                let (z, f) = segment.filter_surface(
+                    &segment.z,
+                    bm.ok(),
+                    extra_bm,
+                    only_bm,
+                    rbms,
+                    fm.ok(),
+                )?;
                 Ok(Segments::Center(Segment {
                     tag: "center_on-bm_filtered".to_owned(),
                     z,
@@ -668,12 +708,19 @@ impl Segments<Segment> {
                 let rbms: Option<Vec<f64>> = env::var("RBMS")
                     .and({
                         let file = File::open("data/RBMS_OA.pkl")?;
-                        Ok(pkl::from_reader(&file)?)
+                        Ok(pkl::from_reader(&file, Default::default())?)
                     })
                     .ok();
                 let extra_bm = env::var("EXTRA_BM_OUTER").ok();
-                let (z, f) =
-                    segment.filter_surface(&segment.z, bm.ok(), extra_bm, rbms, fm.ok())?;
+                let only_bm = env::var("ONLY_BM_OUTER").ok();
+                let (z, f) = segment.filter_surface(
+                    &segment.z,
+                    bm.ok(),
+                    extra_bm,
+                    only_bm,
+                    rbms,
+                    fm.ok(),
+                )?;
                 Ok(Segments::Outer(Segment {
                     tag: "outer_on-bm_filtered".to_owned(),
                     z,
@@ -711,6 +758,14 @@ impl Mirror {
         Ok(Self {
             outer: Segments::Outer(Segment::new(case, "outer")?),
             center: Segments::Center(Segment::new(case, "center")?),
+            segments: None,
+            case: case.to_owned(),
+        })
+    }
+    pub fn new_with(case: &str, n_bm: usize) -> Result<Self> {
+        Ok(Self {
+            outer: Segments::Outer(Segment::new_with(case, "outer", n_bm)?),
+            center: Segments::Center(Segment::new_with(case, "center", n_bm)?),
             segments: None,
             case: case.to_owned(),
         })
