@@ -373,7 +373,7 @@ impl Segment {
         let projection = na::DMatrix::from_columns(&projection_columns);
         //      println!("projection: {:?}", projection.shape());
         let projection_svd = projection.svd(true, true);
-        let sing_values = projection_svd.singular_values;
+        let sing_values = &projection_svd.singular_values;
         let cond = sing_values.max() / sing_values.min();
         log::debug!("Projection condition #: {:.6e}", cond);
         let u = projection_svd
@@ -394,7 +394,9 @@ impl Segment {
                 .for_each(|(_, w)| *w = 0f64);
         }
         let filename = format!("{}_coefs.pkl", self.tag);
-        let ww = w.as_slice().to_owned();
+        let inv_s = na::DMatrix::from_diagonal(&sing_values.map(f64::recip));
+        let b = projection_svd.v_t.as_ref().unwrap().transpose() * inv_s * &w;
+        let ww = b.as_slice().to_owned();
         pkl::to_writer(
             &mut File::create(filename).unwrap(),
             &ww,
